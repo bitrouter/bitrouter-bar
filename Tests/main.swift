@@ -62,6 +62,25 @@ actor PagingClient: PanelClientFetching {
     }
 }
 
+actor MidnightClient: PanelClientFetching {
+    private var pageZeroCalls = 0
+    let yesterday: PanelSnapshot
+    let nextPage: PanelSnapshot
+    let today: PanelSnapshot
+
+    init(yesterday: PanelSnapshot, nextPage: PanelSnapshot, today: PanelSnapshot) {
+        self.yesterday = yesterday
+        self.nextPage = nextPage
+        self.today = today
+    }
+
+    func fetch(since: Date, until: Date, sessionLimit: Int, sessionOffset: Int) async throws -> PanelSnapshot {
+        if sessionOffset > 0 { return nextPage }
+        pageZeroCalls += 1
+        return pageZeroCalls == 1 ? yesterday : today
+    }
+}
+
 enum ContractTestFailure: Error {
     case assertion(String)
 }
@@ -240,6 +259,55 @@ do {
     try await Task.sleep(for: .milliseconds(75))
     try expect(pagingStore.snapshot?.clients.first?.sessions.count == 2, "automatic poll preserves appended pages")
     pagingStore.panelDidClose()
+
+    let currentDay = PanelStore.todayInterval()
+    guard let yesterdayStart = Calendar.autoupdatingCurrent.date(byAdding: .day, value: -1, to: currentDay.start) else {
+        throw ContractTestFailure.assertion("yesterday setup")
+    }
+    let yesterdayPanel = PanelSnapshot(
+        schemaVersion: panel.schemaVersion,
+        generatedAt: panel.generatedAt,
+        usageUpdatedAt: panel.usageUpdatedAt,
+        since: yesterdayStart,
+        until: currentDay.start,
+        clients: panel.clients,
+        sessionPage: panel.sessionPage,
+        warnings: []
+    )
+    let yesterdayNextPage = PanelSnapshot(
+        schemaVersion: panel.schemaVersion,
+        generatedAt: panel.generatedAt,
+        usageUpdatedAt: panel.usageUpdatedAt,
+        since: yesterdayStart,
+        until: currentDay.start,
+        clients: nextClients,
+        sessionPage: SessionPage(offset: 100, limit: 100, hasMore: false, nextOffset: nil),
+        warnings: []
+    )
+    let todayPanel = PanelSnapshot(
+        schemaVersion: panel.schemaVersion,
+        generatedAt: panel.generatedAt,
+        usageUpdatedAt: panel.usageUpdatedAt,
+        since: currentDay.start,
+        until: currentDay.end,
+        clients: panel.clients,
+        sessionPage: panel.sessionPage,
+        warnings: []
+    )
+    let midnightStore = PanelStore(
+        client: MidnightClient(yesterday: yesterdayPanel, nextPage: yesterdayNextPage, today: todayPanel),
+        pollingInterval: .seconds(3_600)
+    )
+    midnightStore.panelDidOpen()
+    try await Task.sleep(for: .milliseconds(10))
+    midnightStore.loadMore()
+    try await Task.sleep(for: .milliseconds(10))
+    try expect(midnightStore.snapshot?.clients.first?.sessions.count == 2, "midnight setup has paginated snapshot")
+    midnightStore.refreshAutomatically(now: currentDay.start.addingTimeInterval(12 * 60 * 60))
+    try await Task.sleep(for: .milliseconds(10))
+    try expect(midnightStore.snapshot?.since == currentDay.start, "midnight tick replaces yesterday snapshot")
+    try expect(midnightStore.snapshot?.clients.first?.sessions.count == 1, "midnight tick resets pagination")
+    midnightStore.panelDidClose()
     print("Contract tests passed")
 } catch {
     FileHandle.standardError.write(Data("Contract tests failed: \(error)\n".utf8))

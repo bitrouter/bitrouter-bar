@@ -33,4 +33,4 @@ The BitRouter daemon was left running. Only the BitRouter Bar process launched f
 
 The release target builds successfully, and `scripts/package-app.sh` produces an arm64 ad hoc signed app that passes strict `codesign` verification.
 
-The local candidate archive is `dist/BitRouter-Bar-0.1.0-macos-arm64.zip` with SHA-256 `c5b067d439150afd88656cff182e38481ea9e95c40fb73ca2d9d62add9a817cf`. It is an ad hoc signed verification artifact. Developer ID signing, notarization, and public release remain pending.
+The local candidate archive is `dist/BitRouter-Bar-0.1.0-macos-arm64.zip` with SHA-256 `4591044efe0843d3cb5d8441e902db020a1c70e093e8bf27a0e28943c4530e56`. It is an ad hoc signed verification artifact. Developer ID signing, notarization, and public release remain pending.

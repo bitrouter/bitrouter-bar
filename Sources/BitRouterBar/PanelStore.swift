@@ -50,22 +50,24 @@ final class PanelStore: ObservableObject {
 
     func refresh() {
         automaticRefreshPaused = false
-        beginRefresh()
+        beginRefresh(interval: Self.todayInterval())
     }
 
-    private func refreshAutomatically() {
-        guard !automaticRefreshPaused, !isRefreshing, !isLoadingMore else { return }
-        beginRefresh()
+    func refreshAutomatically(now: Date = Date(), calendar: Calendar = .autoupdatingCurrent) {
+        let interval = Self.todayInterval(now: now, calendar: calendar)
+        let crossedMidnight = snapshot.map { $0.since != interval.start } ?? false
+        guard (!automaticRefreshPaused || crossedMidnight), !isRefreshing, !isLoadingMore else { return }
+        if crossedMidnight { automaticRefreshPaused = false }
+        beginRefresh(interval: interval)
     }
 
-    private func beginRefresh() {
+    private func beginRefresh(interval: DateInterval) {
         guard isOpen else { return }
         generation &+= 1
         let requestGeneration = generation
         operationTask?.cancel()
         isRefreshing = true
         isLoadingMore = false
-        let interval = Self.todayInterval()
         let limit = pageSize
         operationTask = Task { [weak self, client] in
             let result: Result<PanelSnapshot, Error>
