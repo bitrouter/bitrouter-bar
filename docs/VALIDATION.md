@@ -25,7 +25,7 @@ These are short Activity Monitor-equivalent process samples, not a long-duration
 | Panel open | 49224 | 0.5%, 0.3%, 0.4% | 81,952 KiB, 81,712 KiB, 81,584 KiB |
 | Panel closed | 49224 | 0.0%, 0.0%, 0.3% | 79,488 KiB, 79,488 KiB, 79,568 KiB |
 
-The BitRouter daemon was left running. Only the BitRouter Bar process launched for QA was stopped afterward.
+After final verification, both the temporary acceptance daemon and the QA app were stopped. The pre-existing installed BitRouter daemon was left running.
 
 ## Automated checks
 
@@ -34,3 +34,19 @@ The BitRouter daemon was left running. Only the BitRouter Bar process launched f
 The release target builds successfully, and `scripts/package-app.sh` produces an arm64 ad hoc signed app that passes strict `codesign` verification.
 
 The local candidate archive is `dist/BitRouter-Bar-0.1.0-macos-arm64.zip` with SHA-256 `4591044efe0843d3cb5d8441e902db020a1c70e093e8bf27a0e28943c4530e56`. It is an ad hoc signed verification artifact. Developer ID signing, notarization, and public release remain pending.
+
+## Backend verification
+
+The companion backend is committed separately in BitRouter as `80dc808d` on `codex/bitrouter-bar-mvp`. The UI uses schema version 1 rather than depending on that commit; the currently installed older BitRouter binary does not yet provide this command.
+
+- `cargo nextest run --all-features --no-fail-fast -j 4`: **3,477 passed, 22 skipped** by repository configuration.
+- `cargo clippy --all-features --all-targets -- -D warnings`: passed.
+- `cargo fmt -- --check` and `git diff --check`: passed.
+- Workspace doc tests: **5 passed, 1 ignored**; strict workspace rustdoc also passed.
+- The routed HTTP → settlement → owner IPC → `bro panel` integration test passed. Coverage includes complete totals beyond display pagination, normalized cache/reasoning counts, shared-account attribution, unknown account isolation, snapshot stability, and quota error/stale handling.
+
+The real request was run through the native Codex ACP harness and returned `OK`. Its settled client and root-session totals matched at 16,864 tokens. A final backend recheck returned the same usage and a current Codex weekly quota of 86% (the earlier UI sample was 87%; account quota changes with other usage). Reset semantics remain unknown and are labelled accordingly.
+
+The user selected the current Codex account for first acceptance and explicitly accepted Claude quota being unavailable. No working Claude OAuth credential was present for a live quota check; no Claude quota support is claimed. Historical rows without credential-selection evidence remain account-unknown.
+
+This is a local arm64 candidate, not a public release. Actual transient menu-bar clicking was not automated, and physical sleep/wake plus a long-running energy/leak soak remain manual follow-up checks. Those limits are separate from the passed live data and contract tests.
