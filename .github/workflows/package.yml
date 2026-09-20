@@ -1,0 +1,18 @@
+name: Package candidate
+
+on:
+  workflow_dispatch:
+
+jobs:
+  package:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift --version
+      - run: scripts/package-app.sh
+      - name: Archive app
+        run: ditto -c -k --keepParent "dist/BitRouter Bar.app" "dist/BitRouter-Bar.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BitRouter-Bar-unsigned-candidate
+          path: dist/BitRouter-Bar.zip

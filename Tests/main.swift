@@ -1,0 +1,162 @@
+import Foundation
+
+actor SlowPanelClient: PanelClientFetching {
+    let panel: PanelSnapshot
+
+    init(panel: PanelSnapshot) { self.panel = panel }
+
+    func fetch(since: Date, until: Date, sessionLimit: Int, sessionOffset: Int) async throws -> PanelSnapshot {
+        try? await Task.sleep(for: .milliseconds(100))
+        return panel
+    }
+}
+
+actor RacingPanelClient: PanelClientFetching {
+    private var calls = 0
+    let panel: PanelSnapshot
+
+    init(panel: PanelSnapshot) { self.panel = panel }
+
+    func fetch(since: Date, until: Date, sessionLimit: Int, sessionOffset: Int) async throws -> PanelSnapshot {
+        calls += 1
+        let call = calls
+        try? await Task.sleep(for: call == 1 ? .milliseconds(150) : .milliseconds(10))
+        let changed = TokenCount(value: UInt64(call), state: .known, hasUnknown: false)
+        let clients = panel.clients.map {
+            ClientUsage(id: $0.id, label: $0.label, tokens: changed, lastActivityAt: $0.lastActivityAt, sessions: $0.sessions, accounts: $0.accounts)
+        }
+        return PanelSnapshot(schemaVersion: panel.schemaVersion, generatedAt: panel.generatedAt, usageUpdatedAt: panel.usageUpdatedAt, since: since, until: until, clients: clients, sessionPage: panel.sessionPage, warnings: panel.warnings)
+    }
+}
+
+enum ContractTestFailure: Error {
+    case assertion(String)
+}
+
+func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {
+    if !condition() { throw ContractTestFailure.assertion(message) }
+}
+
+let fixture = """
+{
+  "schema_version":1,
+  "generated_at":"2026-09-19T20:00:00.123Z",
+  "usage_updated_at":"2026-09-19T19:59:00Z",
+  "since":"2026-09-19T04:00:00Z",
+  "until":"2026-09-20T04:00:00Z",
+  "clients":[{
+    "id":"opaque-client","label":"Codex",
+    "tokens":{"value":160000,"state":"known","has_unknown":false},
+    "last_activity_at":"2026-09-19T19:58:00Z",
+    "sessions":[{"id":"opaque-session","short_id":"a81f","tokens":{"value":128000,"state":"known","has_unknown":false},"last_activity_at":"2026-09-19T19:58:00Z"}],
+    "accounts":[{"id":"acct-a","label":"Account A","shared":true,"mapping_state":"known","quota":{"state":"available","sampled_at":"2026-09-19T19:57:00Z","error":null,"windows":[{"label":"5-hour","remaining_percent":42,"remaining_tokens":null,"remaining_requests":null,"remaining_currency":null,"currency":null,"resets_at":"2026-09-19T22:00:00Z","reset_kind":"fixed"}]}}]
+  }],
+  "session_page":{"offset":0,"limit":100,"has_more":true,"next_offset":100},
+  "warnings":[]
+}
+"""
+
+do {
+    let panel = try PanelDecoding.decoder.decode(PanelSnapshot.self, from: Data(fixture.utf8))
+    try expect(panel.schemaVersion == 1, "schema version")
+    try expect(panel.clients.first?.tokens.value == 160_000, "client total")
+    try expect(panel.clients.first?.accounts.first?.shared == true, "shared account")
+    try expect(panel.clients.first?.accounts.first?.quota.windows.first?.remainingPercent == 42, "quota percent")
+    try expect(panel.sessionPage?.nextOffset == 100, "next offset")
+
+    var calendar = Calendar(identifier: .gregorian)
+    guard let zone = TimeZone(identifier: "America/New_York"),
+    let now = ISO8601DateFormatter().date(from: "2026-03-09T03:59:59Z") else {
+        throw ContractTestFailure.assertion("test date setup")
+    }
+    calendar.timeZone = zone
+    let interval = PanelStore.todayInterval(now: now, calendar: calendar)
+    try expect(interval.duration == (23 * 60 * 60) - 1, "DST natural day")
+
+    let secondJSON = fixture
+        .replacingOccurrences(of: "\"offset\":0", with: "\"offset\":100")
+        .replacingOccurrences(of: "\"next_offset\":100", with: "\"next_offset\":null")
+        .replacingOccurrences(of: "\"has_more\":true", with: "\"has_more\":false")
+    let second = try PanelDecoding.decoder.decode(PanelSnapshot.self, from: Data(secondJSON.utf8))
+    let merged = PanelStore.merging(panel, second)
+    try expect(merged.clients.first?.sessions.count == 1, "session deduplication")
+    try expect(merged.clients.first?.tokens.value == 160_000, "server total retained")
+    try expect(merged.sessionPage?.hasMore == false, "last page")
+
+    let temporaryDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("bitrouter-bar-tests-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+    let fakeBro = temporaryDirectory.appendingPathComponent("bro")
+    let encodedFixture = Data(fixture.utf8).base64EncodedString()
+    let script = "#!/bin/sh\nprintf '%s' '\(encodedFixture)' | /usr/bin/base64 -D\n"
+    try Data(script.utf8).write(to: fakeBro)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeBro.path)
+    let client = BroPanelClient(locator: BroExecutableLocator(environment: ["BITROUTER_BAR_BRO_PATH": fakeBro.path]))
+    let processPanel = try await client.fetch(since: panel.since, until: panel.until, sessionLimit: 100)
+    try expect(processPanel.clients.first?.label == "Codex", "native process client")
+
+    let incompatibleBro = temporaryDirectory.appendingPathComponent("incompatible-bro")
+    let incompatibleFixture = fixture.replacingOccurrences(of: "\"schema_version\":1", with: "\"schema_version\":2")
+    let incompatibleEncoded = Data(incompatibleFixture.utf8).base64EncodedString()
+    try Data("#!/bin/sh\nprintf '%s' '\(incompatibleEncoded)' | /usr/bin/base64 -D\n".utf8).write(to: incompatibleBro)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: incompatibleBro.path)
+    let incompatibleClient = BroPanelClient(locator: BroExecutableLocator(environment: ["BITROUTER_BAR_BRO_PATH": incompatibleBro.path]))
+    do {
+        _ = try await incompatibleClient.fetch(since: panel.since, until: panel.until, sessionLimit: 100)
+        throw ContractTestFailure.assertion("incompatible schema expected")
+    } catch BroClientError.incompatibleSchema {}
+
+    var malformedObject = try JSONSerialization.jsonObject(with: Data(fixture.utf8)) as? [String: Any]
+    guard var malformedClients = malformedObject?["clients"] as? [[String: Any]],
+          let firstClient = malformedClients.first else {
+        throw ContractTestFailure.assertion("malformed fixture setup")
+    }
+    malformedClients.append(firstClient)
+    malformedObject?["clients"] = malformedClients
+    let malformedData = try JSONSerialization.data(withJSONObject: malformedObject as Any)
+    let malformedBro = temporaryDirectory.appendingPathComponent("malformed-bro")
+    let malformedEncoded = malformedData.base64EncodedString()
+    try Data("#!/bin/sh\nprintf '%s' '\(malformedEncoded)' | /usr/bin/base64 -D\n".utf8).write(to: malformedBro)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: malformedBro.path)
+    let malformedClient = BroPanelClient(locator: BroExecutableLocator(environment: ["BITROUTER_BAR_BRO_PATH": malformedBro.path]))
+    do {
+        _ = try await malformedClient.fetch(since: panel.since, until: panel.until, sessionLimit: 100)
+        throw ContractTestFailure.assertion("duplicate client rejection expected")
+    } catch BroClientError.invalidResponse {}
+
+    let stubbornBro = temporaryDirectory.appendingPathComponent("stubborn-bro")
+    let stubbornScript = "#!/bin/sh\ntrap '' TERM\nwhile :; do :; done\n"
+    try Data(stubbornScript.utf8).write(to: stubbornBro)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stubbornBro.path)
+    let timeoutClient = BroPanelClient(
+        locator: BroExecutableLocator(environment: ["BITROUTER_BAR_BRO_PATH": stubbornBro.path]),
+        timeout: .milliseconds(50)
+    )
+    let timeoutStarted = ContinuousClock.now
+    do {
+        _ = try await timeoutClient.fetch(since: panel.since, until: panel.until, sessionLimit: 100)
+        throw ContractTestFailure.assertion("timeout expected")
+    } catch BroClientError.timedOut {
+        try expect(timeoutStarted.duration(to: .now) < .seconds(1), "bounded forced process termination")
+    }
+
+    let closedStore = PanelStore(client: SlowPanelClient(panel: panel))
+    closedStore.panelDidOpen()
+    try await Task.sleep(for: .milliseconds(10))
+    closedStore.panelDidClose()
+    try await Task.sleep(for: .milliseconds(150))
+    try expect(closedStore.snapshot == nil, "closed panel discards late response")
+
+    let racingStore = PanelStore(client: RacingPanelClient(panel: panel))
+    racingStore.panelDidOpen()
+    try await Task.sleep(for: .milliseconds(10))
+    racingStore.refresh()
+    try await Task.sleep(for: .milliseconds(200))
+    try expect(racingStore.snapshot?.clients.first?.tokens.value == 2, "newer refresh wins race")
+    racingStore.panelDidClose()
+    print("Contract tests passed")
+} catch {
+    FileHandle.standardError.write(Data("Contract tests failed: \(error)\n".utf8))
+    exit(1)
+}
