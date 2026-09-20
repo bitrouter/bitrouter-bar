@@ -117,6 +117,9 @@ struct BroPanelClient: Sendable {
         if payload.message.hasPrefix("panel_timeout") {
             return "BitRouter did not respond in time."
         }
+        if payload.message.hasPrefix("panel_snapshot_expired") {
+            return "The session page expired. Refresh to reload today’s data."
+        }
         return "BitRouter could not load panel data."
     }
 

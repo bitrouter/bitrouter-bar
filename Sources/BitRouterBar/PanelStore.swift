@@ -15,7 +15,7 @@ final class PanelStore: ObservableObject {
     private var generation: UInt = 0
     private var isOpen = false
     private let pageSize = 100
-    private let pollingInterval: Duration = .seconds(30)
+    private let pollingInterval: Duration = .seconds(5)
 
     init(client: any PanelClientFetching = BroPanelClient()) {
         self.client = client

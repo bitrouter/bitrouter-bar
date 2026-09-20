@@ -109,13 +109,13 @@ struct PanelView: View {
     }
 
     @ViewBuilder private func accountRows(_ account: AccountQuota) -> some View {
-        let accountName = account.mappingState == .unknown ? "Unknown account" : (account.label ?? "Account")
+        let accountName = accountName(account)
         let prefix = account.shared ? "\(accountName) · Shared quota" : accountName
         switch account.quota.state {
         case .unsupported:
             quotaLine(prefix, "Quota lookup is not supported")
         case .unknown:
-            quotaLine(prefix, "Quota unavailable")
+            quotaLine(prefix, account.mappingState == .known ? "Checking quota…" : "Quota unavailable")
         case .error:
             quotaLine(prefix, "Refresh failed\(sampleAge(account.quota.sampledAt))")
         case .stale, .available:
@@ -135,6 +135,13 @@ struct PanelView: View {
             .foregroundStyle(.secondary)
             .padding(.leading, 18)
             .accessibilityLabel("\(prefix), \(detail)")
+    }
+
+    private func accountName(_ account: AccountQuota) -> String {
+        if account.mappingState == .unknown {
+            return account.label.map { "\($0) · Account unknown" } ?? "Unknown account"
+        }
+        return account.label ?? "Account"
     }
 
     private var footer: some View {

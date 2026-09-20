@@ -125,6 +125,20 @@ do {
         throw ContractTestFailure.assertion("duplicate client rejection expected")
     } catch BroClientError.invalidResponse {}
 
+    let expiredBro = temporaryDirectory.appendingPathComponent("expired-bro")
+    let expiredEnvelope = #"{"error":{"kind":"command_failed","message":"panel_snapshot_expired: reload page zero","context":[],"hint":null}}"#
+    let expiredEncoded = Data(expiredEnvelope.utf8).base64EncodedString()
+    let expiredScript = "#!/bin/sh\nprintf '%s' '\(expiredEncoded)' | /usr/bin/base64 -D\nexit 1\n"
+    try Data(expiredScript.utf8).write(to: expiredBro)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: expiredBro.path)
+    let expiredClient = BroPanelClient(locator: BroExecutableLocator(environment: ["BITROUTER_BAR_BRO_PATH": expiredBro.path]))
+    do {
+        _ = try await expiredClient.fetch(since: panel.since, until: panel.until, sessionLimit: 100, sessionOffset: 100)
+        throw ContractTestFailure.assertion("expired snapshot error expected")
+    } catch let BroClientError.commandFailed(_, message) {
+        try expect(message == "The session page expired. Refresh to reload today’s data.", "expired page guidance")
+    }
+
     let stubbornBro = temporaryDirectory.appendingPathComponent("stubborn-bro")
     let stubbornScript = "#!/bin/sh\ntrap '' TERM\nwhile :; do :; done\n"
     try Data(stubbornScript.utf8).write(to: stubbornBro)

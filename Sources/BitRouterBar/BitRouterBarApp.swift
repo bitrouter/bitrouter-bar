@@ -15,9 +15,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let store = PanelStore()
     private let popover = NSPopover()
     private var statusItem: NSStatusItem?
+    private var qaWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
+        let opensForQA = ProcessInfo.processInfo.environment["BITROUTER_BAR_QA_OPEN_ON_LAUNCH"] == "1"
+        NSApp.setActivationPolicy(opensForQA ? .regular : .accessory)
         popover.behavior = .transient
         popover.contentSize = NSSize(width: 380, height: 480)
         popover.contentViewController = NSHostingController(rootView: PanelView(store: store))
@@ -32,6 +34,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             button.setAccessibilityLabel("BitRouter")
         }
         statusItem = item
+
+        if opensForQA {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                togglePopover()
+                let window = NSWindow(
+                    contentRect: NSRect(x: 0, y: 0, width: 380, height: 480),
+                    styleMask: [.titled, .closable],
+                    backing: .buffered,
+                    defer: false
+                )
+                window.title = "BitRouter Bar QA"
+                window.contentViewController = NSHostingController(rootView: PanelView(store: store))
+                window.center()
+                window.makeKeyAndOrderFront(nil)
+                qaWindow = window
+            }
+        }
     }
 
     @objc private func togglePopover() {
