@@ -15,6 +15,8 @@ final class PanelStore: ObservableObject {
     private var generation: UInt = 0
     private var isOpen = false
     private var automaticRefreshPaused = false
+    private var operationSurvivesClose = false
+    private var preservePagesOnNextOpen = false
     private let pageSize = 100
     private let pollingInterval: Duration
 
@@ -25,7 +27,9 @@ final class PanelStore: ObservableObject {
 
     func panelDidOpen() {
         isOpen = true
-        automaticRefreshPaused = false
+        let sameDay = snapshot.map { $0.since == Self.todayInterval().start } ?? false
+        automaticRefreshPaused = preservePagesOnNextOpen && sameDay
+        preservePagesOnNextOpen = false
         pollingTask?.cancel()
         pollingTask = Task { [weak self] in
             guard let self else { return }
@@ -39,18 +43,35 @@ final class PanelStore: ObservableObject {
 
     func panelDidClose() {
         isOpen = false
-        generation &+= 1
         pollingTask?.cancel()
         pollingTask = nil
+        guard !operationSurvivesClose else { return }
+        generation &+= 1
         operationTask?.cancel()
         operationTask = nil
         isRefreshing = false
         isLoadingMore = false
     }
 
+    func cancelAll() {
+        operationSurvivesClose = false
+        panelDidClose()
+    }
+
     func refresh() {
         automaticRefreshPaused = false
         beginRefresh(interval: Self.todayInterval())
+    }
+
+    // Native menu commands dismiss the menu before their work completes.
+    // Keep exactly this explicit read alive, without starting background polling.
+    func refreshFromMenuCommand() {
+        automaticRefreshPaused = false
+        beginRefresh(interval: Self.todayInterval(), surviveClose: true)
+    }
+
+    func loadMoreFromMenuCommand() {
+        loadMore(surviveClose: true)
     }
 
     func refreshAutomatically(now: Date = Date(), calendar: Calendar = .autoupdatingCurrent) {
@@ -61,8 +82,10 @@ final class PanelStore: ObservableObject {
         beginRefresh(interval: interval)
     }
 
-    private func beginRefresh(interval: DateInterval) {
-        guard isOpen else { return }
+    private func beginRefresh(interval: DateInterval, surviveClose: Bool = false) {
+        guard isOpen || surviveClose else { return }
+        operationSurvivesClose = surviveClose
+        preservePagesOnNextOpen = false
         generation &+= 1
         let requestGeneration = generation
         operationTask?.cancel()
@@ -76,8 +99,9 @@ final class PanelStore: ObservableObject {
             } catch {
                 result = .failure(error)
             }
-            guard let self, isOpen, generation == requestGeneration else { return }
+            guard let self, (isOpen || operationSurvivesClose), generation == requestGeneration else { return }
             isRefreshing = false
+            operationSurvivesClose = false
             operationTask = nil
             switch result {
             case let .success(value):
@@ -93,12 +117,14 @@ final class PanelStore: ObservableObject {
         }
     }
 
-    func loadMore() {
+    func loadMore(surviveClose: Bool = false) {
         guard let current = snapshot,
               current.sessionPage?.hasMore == true,
               let offset = current.sessionPage?.nextOffset,
               !isLoadingMore,
-              isOpen else { return }
+              (isOpen || surviveClose) else { return }
+        operationSurvivesClose = surviveClose
+        preservePagesOnNextOpen = surviveClose
         generation &+= 1
         let requestGeneration = generation
         operationTask?.cancel()
@@ -118,8 +144,9 @@ final class PanelStore: ObservableObject {
             } catch {
                 result = .failure(error)
             }
-            guard let self, isOpen, generation == requestGeneration else { return }
+            guard let self, (isOpen || operationSurvivesClose), generation == requestGeneration else { return }
             isLoadingMore = false
+            operationSurvivesClose = false
             operationTask = nil
             switch result {
             case let .success(next):
@@ -129,8 +156,8 @@ final class PanelStore: ObservableObject {
                 return
             case let .failure(error):
                 automaticRefreshPaused = false
+                preservePagesOnNextOpen = false
                 errorMessage = (error as? LocalizedError)?.errorDescription ?? "More sessions could not be loaded."
-                isStale = true
             }
         }
     }

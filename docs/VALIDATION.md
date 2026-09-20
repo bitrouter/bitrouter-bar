@@ -1,5 +1,7 @@
 # Local acceptance evidence
 
+This records the original 0.1.0 popover. For the replacement native menu, see [NATIVE_MENU_REVIEW.md](NATIVE_MENU_REVIEW.md).
+
 Date: 2026-09-19  
 Platform: macOS 26, arm64, Swift 6.2.4
 

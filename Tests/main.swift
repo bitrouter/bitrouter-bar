@@ -58,7 +58,10 @@ actor PagingClient: PanelClientFetching {
     }
 
     func fetch(since: Date, until: Date, sessionLimit: Int, sessionOffset: Int) async throws -> PanelSnapshot {
-        sessionOffset == 0 ? first : second
+        let page = sessionOffset == 0 ? first : second
+        return PanelSnapshot(schemaVersion: page.schemaVersion, generatedAt: page.generatedAt,
+            usageUpdatedAt: page.usageUpdatedAt, since: since, until: until,
+            clients: page.clients, sessionPage: page.sessionPage, warnings: page.warnings)
     }
 }
 
@@ -308,6 +311,32 @@ do {
     try expect(midnightStore.snapshot?.since == currentDay.start, "midnight tick replaces yesterday snapshot")
     try expect(midnightStore.snapshot?.clients.first?.sessions.count == 1, "midnight tick resets pagination")
     midnightStore.panelDidClose()
+    // Native actions can arrive before OR after NSMenu's close callback.
+    for closeBeforeCommand in [true, false] {
+        let commandStore = PanelStore(client: SlowPanelClient(panel: panel), pollingInterval: .seconds(3_600))
+        commandStore.panelDidOpen()
+        if closeBeforeCommand { commandStore.panelDidClose() }
+        commandStore.refreshFromMenuCommand()
+        if !closeBeforeCommand { commandStore.panelDidClose() }
+        try await Task.sleep(for: .milliseconds(160))
+        try expect(commandStore.snapshot != nil, "native refresh survives menu dismissal in either callback order")
+        try expect(!commandStore.isRefreshing, "native command completes while closed")
+        commandStore.cancelAll()
+    }
+    let commandPages = PanelStore(client: PagingClient(first: panel, second: nextPage), pollingInterval: .milliseconds(15))
+    commandPages.panelDidOpen()
+    try await Task.sleep(for: .milliseconds(15))
+    commandPages.panelDidClose()
+    commandPages.loadMoreFromMenuCommand()
+    try await Task.sleep(for: .milliseconds(20))
+    try expect(commandPages.snapshot?.clients.first?.sessions.count == 2, "native load-more completes after dismissal")
+    commandPages.panelDidOpen()
+    try await Task.sleep(for: .milliseconds(60))
+    try expect(commandPages.snapshot?.clients.first?.sessions.count == 2, "native load-more remains visible on next open")
+    commandPages.cancelAll()
+
+    try runMenuPresentationTests()
+    try await runNativeMenuTests(panel: panel, nextPage: nextPage)
     print("Contract tests passed")
 } catch {
     FileHandle.standardError.write(Data("Contract tests failed: \(error)\n".utf8))
