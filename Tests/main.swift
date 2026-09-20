@@ -1,18 +1,23 @@
 import Foundation
 
 actor SlowPanelClient: PanelClientFetching {
+    private(set) var calls = 0
+    private(set) var completions = 0
     let panel: PanelSnapshot
 
     init(panel: PanelSnapshot) { self.panel = panel }
 
     func fetch(since: Date, until: Date, sessionLimit: Int, sessionOffset: Int) async throws -> PanelSnapshot {
+        calls += 1
         try? await Task.sleep(for: .milliseconds(100))
+        completions += 1
         return panel
     }
 }
 
 actor RacingPanelClient: PanelClientFetching {
-    private var calls = 0
+    private(set) var calls = 0
+    private(set) var completions = 0
     let panel: PanelSnapshot
 
     init(panel: PanelSnapshot) { self.panel = panel }
@@ -21,6 +26,7 @@ actor RacingPanelClient: PanelClientFetching {
         calls += 1
         let call = calls
         try? await Task.sleep(for: call == 1 ? .milliseconds(150) : .milliseconds(10))
+        completions += 1
         let changed = TokenCount(value: UInt64(call), state: .known, hasUnknown: false)
         let clients = panel.clients.map {
             ClientUsage(id: $0.id, label: $0.label, tokens: changed, lastActivityAt: $0.lastActivityAt, sessions: $0.sessions, accounts: $0.accounts)
@@ -90,6 +96,19 @@ enum ContractTestFailure: Error {
 
 func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {
     if !condition() { throw ContractTestFailure.assertion(message) }
+}
+
+// Wait for observable completion, allowing slow CI scheduling without changing
+// the simulated request delays or weakening lifecycle assertions.
+@MainActor
+func waitFor(_ condition: () async -> Bool, _ message: String) async throws {
+    let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+    while !(await condition()) {
+        guard ContinuousClock.now < deadline else {
+            throw ContractTestFailure.assertion(message)
+        }
+        try await Task.sleep(for: .milliseconds(10))
+    }
 }
 
 let fixture = """
@@ -212,26 +231,30 @@ do {
         try expect(timeoutStarted.duration(to: .now) < .seconds(1), "bounded forced process termination")
     }
 
-    let closedStore = PanelStore(client: SlowPanelClient(panel: panel))
+    let closedClient = SlowPanelClient(panel: panel)
+    let closedStore = PanelStore(client: closedClient)
     closedStore.panelDidOpen()
-    try await Task.sleep(for: .milliseconds(10))
+    try await waitFor({ await closedClient.calls == 1 }, "closed-panel request starts")
     closedStore.panelDidClose()
-    try await Task.sleep(for: .milliseconds(150))
+    try await waitFor({ await closedClient.completions == 1 }, "closed-panel late response finishes")
     try expect(closedStore.snapshot == nil, "closed panel discards late response")
 
-    let racingStore = PanelStore(client: RacingPanelClient(panel: panel))
+    let racingClient = RacingPanelClient(panel: panel)
+    let racingStore = PanelStore(client: racingClient)
     racingStore.panelDidOpen()
-    try await Task.sleep(for: .milliseconds(10))
+    try await waitFor({ await racingClient.calls == 1 }, "first racing request starts")
     racingStore.refresh()
-    try await Task.sleep(for: .milliseconds(200))
+    try await waitFor({ await racingClient.completions == 2 }, "both racing responses finish")
+    try await waitFor({ !racingStore.isRefreshing }, "newer refresh completes")
     try expect(racingStore.snapshot?.clients.first?.tokens.value == 2, "newer refresh wins race")
     racingStore.panelDidClose()
 
     let slowClient = CancellableSlowClient(panel: panel)
     let slowStore = PanelStore(client: slowClient, pollingInterval: .milliseconds(20))
     slowStore.panelDidOpen()
-    try await Task.sleep(for: .milliseconds(75))
-    try expect(slowStore.snapshot != nil, "slow automatic refresh completes")
+    try await waitFor({ await slowClient.calls >= 1 }, "slow automatic refresh starts")
+    slowStore.refreshAutomatically()
+    try await waitFor({ slowStore.snapshot != nil }, "slow automatic refresh completes")
     let slowCancellations = await slowClient.cancellations
     try expect(slowCancellations == 0, "poll does not cancel an in-flight refresh")
     slowStore.panelDidClose()
@@ -257,8 +280,9 @@ do {
     )
     let pagingStore = PanelStore(client: PagingClient(first: panel, second: nextPage), pollingInterval: .milliseconds(20))
     pagingStore.panelDidOpen()
-    try await Task.sleep(for: .milliseconds(10))
+    try await waitFor({ pagingStore.snapshot != nil }, "first page completes before loading more")
     pagingStore.loadMore()
+    try await waitFor({ !pagingStore.isLoadingMore }, "additional page completes")
     try await Task.sleep(for: .milliseconds(75))
     try expect(pagingStore.snapshot?.clients.first?.sessions.count == 2, "automatic poll preserves appended pages")
     pagingStore.panelDidClose()
@@ -302,12 +326,12 @@ do {
         pollingInterval: .seconds(3_600)
     )
     midnightStore.panelDidOpen()
-    try await Task.sleep(for: .milliseconds(10))
+    try await waitFor({ midnightStore.snapshot != nil }, "yesterday first page completes")
     midnightStore.loadMore()
-    try await Task.sleep(for: .milliseconds(10))
+    try await waitFor({ !midnightStore.isLoadingMore }, "yesterday additional page completes")
     try expect(midnightStore.snapshot?.clients.first?.sessions.count == 2, "midnight setup has paginated snapshot")
     midnightStore.refreshAutomatically(now: currentDay.start.addingTimeInterval(12 * 60 * 60))
-    try await Task.sleep(for: .milliseconds(10))
+    try await waitFor({ !midnightStore.isRefreshing }, "midnight refresh completes")
     try expect(midnightStore.snapshot?.since == currentDay.start, "midnight tick replaces yesterday snapshot")
     try expect(midnightStore.snapshot?.clients.first?.sessions.count == 1, "midnight tick resets pagination")
     midnightStore.panelDidClose()
@@ -318,17 +342,17 @@ do {
         if closeBeforeCommand { commandStore.panelDidClose() }
         commandStore.refreshFromMenuCommand()
         if !closeBeforeCommand { commandStore.panelDidClose() }
-        try await Task.sleep(for: .milliseconds(160))
+        try await waitFor({ !commandStore.isRefreshing }, "native refresh completes after dismissal")
         try expect(commandStore.snapshot != nil, "native refresh survives menu dismissal in either callback order")
         try expect(!commandStore.isRefreshing, "native command completes while closed")
         commandStore.cancelAll()
     }
     let commandPages = PanelStore(client: PagingClient(first: panel, second: nextPage), pollingInterval: .milliseconds(15))
     commandPages.panelDidOpen()
-    try await Task.sleep(for: .milliseconds(15))
+    try await waitFor({ commandPages.snapshot != nil }, "native first page completes")
     commandPages.panelDidClose()
     commandPages.loadMoreFromMenuCommand()
-    try await Task.sleep(for: .milliseconds(20))
+    try await waitFor({ !commandPages.isLoadingMore }, "native additional page completes")
     try expect(commandPages.snapshot?.clients.first?.sessions.count == 2, "native load-more completes after dismissal")
     commandPages.panelDidOpen()
     try await Task.sleep(for: .milliseconds(60))

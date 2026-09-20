@@ -10,14 +10,6 @@ func runNativeMenuTests(panel: PanelSnapshot, nextPage: PanelSnapshot) async thr
     defer { controller.stop() }
     let menu = controller.rootMenu
 
-    func waitFor(_ condition: () -> Bool, _ message: String) async throws {
-        for _ in 0..<100 {
-            if condition() { return }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        throw ContractTestFailure.assertion(message)
-    }
-
     controller.menuWillOpen(menu)
     try await waitFor({ menu.items.contains { $0.identifier?.rawValue == "client:opaque-client" } }, "native menu renders completed asynchronous snapshot")
     guard let client = menu.items.first(where: { $0.identifier?.rawValue == "client:opaque-client" }),
