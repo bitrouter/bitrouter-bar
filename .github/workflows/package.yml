@@ -11,8 +11,8 @@ jobs:
       - run: swift --version
       - run: scripts/package-app.sh
       - name: Archive app
-        run: ditto -c -k --keepParent "dist/BitRouter Bar.app" "dist/BitRouter-Bar.zip"
+        run: ditto -c -k --norsrc --keepParent "dist/BitRouter Bar.app" "dist/BitRouter-Bar.zip"
       - uses: actions/upload-artifact@v4
         with:
-          name: BitRouter-Bar-unsigned-candidate
+          name: BitRouter-Bar-adhoc-candidate
           path: dist/BitRouter-Bar.zip

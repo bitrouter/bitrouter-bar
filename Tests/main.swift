@@ -29,6 +29,39 @@ actor RacingPanelClient: PanelClientFetching {
     }
 }
 
+actor CancellableSlowClient: PanelClientFetching {
+    private(set) var calls = 0
+    private(set) var cancellations = 0
+    let panel: PanelSnapshot
+
+    init(panel: PanelSnapshot) { self.panel = panel }
+
+    func fetch(since: Date, until: Date, sessionLimit: Int, sessionOffset: Int) async throws -> PanelSnapshot {
+        calls += 1
+        do {
+            try await Task.sleep(for: .milliseconds(60))
+            return panel
+        } catch {
+            cancellations += 1
+            throw error
+        }
+    }
+}
+
+actor PagingClient: PanelClientFetching {
+    let first: PanelSnapshot
+    let second: PanelSnapshot
+
+    init(first: PanelSnapshot, second: PanelSnapshot) {
+        self.first = first
+        self.second = second
+    }
+
+    func fetch(since: Date, until: Date, sessionLimit: Int, sessionOffset: Int) async throws -> PanelSnapshot {
+        sessionOffset == 0 ? first : second
+    }
+}
+
 enum ContractTestFailure: Error {
     case assertion(String)
 }
@@ -63,6 +96,8 @@ do {
     try expect(panel.clients.first?.accounts.first?.shared == true, "shared account")
     try expect(panel.clients.first?.accounts.first?.quota.windows.first?.remainingPercent == 42, "quota percent")
     try expect(panel.sessionPage?.nextOffset == 100, "next offset")
+    let mixedTokens = TokenCount(value: 17, state: .estimated, hasUnknown: true)
+    try expect(mixedTokens.displayText == "≈17+ · Some usage unknown", "estimated partial qualifier")
 
     var calendar = Calendar(identifier: .gregorian)
     guard let zone = TimeZone(identifier: "America/New_York"),
@@ -169,6 +204,42 @@ do {
     try await Task.sleep(for: .milliseconds(200))
     try expect(racingStore.snapshot?.clients.first?.tokens.value == 2, "newer refresh wins race")
     racingStore.panelDidClose()
+
+    let slowClient = CancellableSlowClient(panel: panel)
+    let slowStore = PanelStore(client: slowClient, pollingInterval: .milliseconds(20))
+    slowStore.panelDidOpen()
+    try await Task.sleep(for: .milliseconds(75))
+    try expect(slowStore.snapshot != nil, "slow automatic refresh completes")
+    let slowCancellations = await slowClient.cancellations
+    try expect(slowCancellations == 0, "poll does not cancel an in-flight refresh")
+    slowStore.panelDidClose()
+
+    let additionalSession = SessionUsage(
+        id: "opaque-session-2",
+        shortID: "b92e",
+        tokens: TokenCount(value: 32_000, state: .known, hasUnknown: false),
+        lastActivityAt: panel.generatedAt
+    )
+    let nextClients = panel.clients.map {
+        ClientUsage(id: $0.id, label: $0.label, tokens: $0.tokens, lastActivityAt: $0.lastActivityAt, sessions: [additionalSession], accounts: $0.accounts)
+    }
+    let nextPage = PanelSnapshot(
+        schemaVersion: panel.schemaVersion,
+        generatedAt: panel.generatedAt,
+        usageUpdatedAt: panel.usageUpdatedAt,
+        since: panel.since,
+        until: panel.until,
+        clients: nextClients,
+        sessionPage: SessionPage(offset: 100, limit: 100, hasMore: false, nextOffset: nil),
+        warnings: []
+    )
+    let pagingStore = PanelStore(client: PagingClient(first: panel, second: nextPage), pollingInterval: .milliseconds(20))
+    pagingStore.panelDidOpen()
+    try await Task.sleep(for: .milliseconds(10))
+    pagingStore.loadMore()
+    try await Task.sleep(for: .milliseconds(75))
+    try expect(pagingStore.snapshot?.clients.first?.sessions.count == 2, "automatic poll preserves appended pages")
+    pagingStore.panelDidClose()
     print("Contract tests passed")
 } catch {
     FileHandle.standardError.write(Data("Contract tests failed: \(error)\n".utf8))

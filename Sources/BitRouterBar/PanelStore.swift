@@ -14,22 +14,25 @@ final class PanelStore: ObservableObject {
     private var operationTask: Task<Void, Never>?
     private var generation: UInt = 0
     private var isOpen = false
+    private var automaticRefreshPaused = false
     private let pageSize = 100
-    private let pollingInterval: Duration = .seconds(5)
+    private let pollingInterval: Duration
 
-    init(client: any PanelClientFetching = BroPanelClient()) {
+    init(client: any PanelClientFetching = BroPanelClient(), pollingInterval: Duration = .seconds(5)) {
         self.client = client
+        self.pollingInterval = pollingInterval
     }
 
     func panelDidOpen() {
         isOpen = true
+        automaticRefreshPaused = false
         pollingTask?.cancel()
         pollingTask = Task { [weak self] in
             guard let self else { return }
-            refresh()
+            refreshAutomatically()
             while !Task.isCancelled {
                 do { try await Task.sleep(for: pollingInterval) } catch { return }
-                refresh()
+                refreshAutomatically()
             }
         }
     }
@@ -46,6 +49,16 @@ final class PanelStore: ObservableObject {
     }
 
     func refresh() {
+        automaticRefreshPaused = false
+        beginRefresh()
+    }
+
+    private func refreshAutomatically() {
+        guard !automaticRefreshPaused, !isRefreshing, !isLoadingMore else { return }
+        beginRefresh()
+    }
+
+    private func beginRefresh() {
         guard isOpen else { return }
         generation &+= 1
         let requestGeneration = generation
@@ -89,6 +102,7 @@ final class PanelStore: ObservableObject {
         operationTask?.cancel()
         isRefreshing = false
         isLoadingMore = true
+        automaticRefreshPaused = true
         let limit = pageSize
         operationTask = Task { [weak self, client] in
             let result: Result<PanelSnapshot, Error>
@@ -112,6 +126,7 @@ final class PanelStore: ObservableObject {
             case let .failure(error) where error is CancellationError:
                 return
             case let .failure(error):
+                automaticRefreshPaused = false
                 errorMessage = (error as? LocalizedError)?.errorDescription ?? "More sessions could not be loaded."
                 isStale = true
             }

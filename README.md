@@ -3,6 +3,7 @@
 BitRouter Bar is a small native macOS menu bar companion for a local BitRouter installation. Its single popover shows settled token usage for today by client, root sessions on expansion, and account quota states supplied by BitRouter.
 
 The reviewed MVP scope and acceptance criteria live in [docs/MVP.md](docs/MVP.md).
+Recorded local acceptance evidence and its limits live in [docs/VALIDATION.md](docs/VALIDATION.md).
 
 This repository contains only the UI client. It never opens BitRouter's database, reads provider credentials, refreshes OAuth tokens, or manages the daemon.
 

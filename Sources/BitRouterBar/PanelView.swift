@@ -123,7 +123,7 @@ struct PanelView: View {
                 quotaLine(prefix, account.quota.state == .stale ? "Quota is stale" : "Quota unavailable")
             } else {
                 ForEach(Array(account.quota.windows.enumerated()), id: \.offset) { _, window in
-                    quotaLine(prefix, windowText(window, stale: account.quota.state == .stale))
+                    quotaLine(prefix, windowText(window, stale: account.quota.state == .stale, sampledAt: account.quota.sampledAt))
                 }
             }
         }
@@ -163,14 +163,10 @@ struct PanelView: View {
     }
 
     private func tokenText(_ count: TokenCount) -> String {
-        guard let value = count.value else { return "Unknown" }
-        let formatted = value.formatted(.number.notation(.compactName))
-        if count.state == .estimated { return "≈\(formatted)" }
-        if count.hasUnknown { return "\(formatted)+ · Some usage unknown" }
-        return formatted
+        count.displayText
     }
 
-    private func windowText(_ window: QuotaWindow, stale: Bool) -> String {
+    private func windowText(_ window: QuotaWindow, stale: Bool, sampledAt: Date?) -> String {
         var value: String
         if let percent = window.remainingPercent {
             value = "\(percent.formatted(.number.precision(.fractionLength(0))))% remaining"
@@ -183,10 +179,14 @@ struct PanelView: View {
         } else {
             value = "Remaining quota unknown"
         }
-        if let reset = window.resetsAt, window.resetKind != .rolling {
-            value += " · resets " + reset.formatted(.relative(presentation: .numeric))
+        if let reset = window.resetsAt {
+            if window.resetKind == .fixed {
+                value += " · resets " + reset.formatted(.relative(presentation: .numeric))
+            } else if window.resetKind != .rolling {
+                value += " · upstream reset time " + reset.formatted(.relative(presentation: .numeric))
+            }
         }
-        if stale { value += " · stale" }
+        if stale { value += " · stale" + sampleAge(sampledAt) }
         return "\(window.label): \(value)"
     }
 

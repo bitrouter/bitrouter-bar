@@ -46,6 +46,16 @@ struct TokenCount: Codable, Equatable, Sendable {
     }
 }
 
+extension TokenCount {
+    var displayText: String {
+        guard let value else { return "Unknown" }
+        let formatted = value.formatted()
+        var result = state == .estimated ? "≈\(formatted)" : formatted
+        if hasUnknown { result += "+ · Some usage unknown" }
+        return result
+    }
+}
+
 struct SessionUsage: Codable, Equatable, Identifiable, Sendable {
     let id: String
     let shortID: String

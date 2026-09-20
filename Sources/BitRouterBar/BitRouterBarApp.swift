@@ -11,15 +11,21 @@ struct BitRouterBarApp: App {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDelegate {
     private let store = PanelStore()
     private let popover = NSPopover()
     private var statusItem: NSStatusItem?
+#if DEBUG
     private var qaWindow: NSWindow?
+#endif
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+#if DEBUG
         let opensForQA = ProcessInfo.processInfo.environment["BITROUTER_BAR_QA_OPEN_ON_LAUNCH"] == "1"
         NSApp.setActivationPolicy(opensForQA ? .regular : .accessory)
+#else
+        NSApp.setActivationPolicy(.accessory)
+#endif
         popover.behavior = .transient
         popover.contentSize = NSSize(width: 380, height: 480)
         popover.contentViewController = NSHostingController(rootView: PanelView(store: store))
@@ -35,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         statusItem = item
 
+#if DEBUG
         if opensForQA {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
@@ -46,12 +53,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     defer: false
                 )
                 window.title = "BitRouter Bar QA"
+                window.isReleasedWhenClosed = false
                 window.contentViewController = NSHostingController(rootView: PanelView(store: store))
+                window.delegate = self
                 window.center()
                 window.makeKeyAndOrderFront(nil)
                 qaWindow = window
+                saveQAScreenshotIfRequested(window)
             }
         }
+#endif
     }
 
     @objc private func togglePopover() {
@@ -72,4 +83,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         store.panelDidClose()
     }
+
+    func windowWillClose(_ notification: Notification) {
+        store.panelDidClose()
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+#if DEBUG
+        guard let qaWindow else { return true }
+        qaWindow.makeKeyAndOrderFront(nil)
+        store.panelDidOpen()
+#endif
+        return true
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+#if DEBUG
+    private func saveQAScreenshotIfRequested(_ window: NSWindow) {
+        guard let path = ProcessInfo.processInfo.environment["BITROUTER_BAR_QA_SCREENSHOT_PATH"] else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+            guard let view = window.contentView,
+                  let image = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+            view.cacheDisplay(in: view.bounds, to: image)
+            guard let png = image.representation(using: .png, properties: [:]) else { return }
+            try? png.write(to: URL(fileURLWithPath: path), options: .atomic)
+        }
+    }
+#endif
 }
